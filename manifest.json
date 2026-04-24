@@ -1,0 +1,19 @@
+{
+  "name": "DriveFetch PWA",
+  "short_name": "DriveFetch",
+  "description": "Google Drive shared folder scanner and authorized batch downloader.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1020",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

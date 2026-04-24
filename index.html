@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DriveFetch" />
+  <title>DriveFetch PWA</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+  <script src="update-config.js" defer></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="app-icon" aria-hidden="true">DF</div>
+        <div>
+          <h1>DriveFetch</h1>
+          <p>Google Drive 共用檔案批次下載</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span class="version-badge" id="versionBadge">V1_0</span>
+        <button class="icon-btn" id="themeToggle" aria-label="切換主題">◐</button>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <section class="view active" id="viewDownload" aria-labelledby="downloadTitle">
+        <div class="notice danger">
+          <strong>合規限制</strong>
+          <span>本工具只使用 Google Drive 官方 API 與使用者授權，不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。</span>
+        </div>
+
+        <div class="card hero-card">
+          <div class="section-title-row">
+            <div>
+              <h2 id="downloadTitle">輸入共用連結</h2>
+              <p>支援 Drive 資料夾、單一檔案、Google Docs / Sheets / Slides 連結。</p>
+            </div>
+            <span class="mode-pill" id="authState">未授權</span>
+          </div>
+
+          <label class="field-label" for="driveUrl">Google Drive 共用網址</label>
+          <textarea id="driveUrl" rows="3" placeholder="貼上 https://drive.google.com/drive/folders/... 或 https://drive.google.com/file/d/..." spellcheck="false"></textarea>
+
+          <div class="quick-actions">
+            <button class="primary" id="loginBtn">登入 Google</button>
+            <button class="secondary" id="scanBtn">掃描檔案</button>
+            <button class="success" id="zipBtn" disabled>下載 ZIP</button>
+          </div>
+
+          <div class="mini-grid">
+            <div class="stat-card"><span id="statFiles">0</span><small>檔案</small></div>
+            <div class="stat-card"><span id="statFolders">0</span><small>資料夾</small></div>
+            <div class="stat-card"><span id="statSize">0 B</span><small>可估大小</small></div>
+            <div class="stat-card"><span id="statSkipped">0</span><small>略過</small></div>
+          </div>
+        </div>
+
+        <div class="card progress-card">
+          <div class="progress-head">
+            <span id="progressLabel">尚未開始</span>
+            <span id="progressPct">0%</span>
+          </div>
+          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+
+        <div class="card list-card">
+          <div class="section-title-row compact">
+            <div>
+              <h2>掃描結果</h2>
+              <p id="listHint">掃描後會列出將被打包下載的檔案。</p>
+            </div>
+            <button class="ghost small" id="clearBtn">清除</button>
+          </div>
+          <div class="file-list" id="fileList"></div>
+        </div>
+
+        <div class="card log-card">
+          <div class="section-title-row compact">
+            <div>
+              <h2>執行紀錄</h2>
+              <p>錯誤與處理狀態會顯示於此。</p>
+            </div>
+          </div>
+          <pre id="logBox" aria-live="polite"></pre>
+        </div>
+      </section>
+
+      <section class="view" id="viewSettings" aria-labelledby="settingsTitle">
+        <div class="card">
+          <h2 id="settingsTitle">Google API 設定</h2>
+          <p class="muted">建議使用 OAuth Client ID。API Key 只適合公開分享檔案，且必須在 Google Cloud Console 限制網域與 API。</p>
+
+          <label class="field-label" for="clientId">OAuth Web Client ID</label>
+          <input id="clientId" type="text" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off" />
+
+          <label class="field-label" for="apiKey">API Key（選填，公開資料夾模式）</label>
+          <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off" />
+
+          <label class="field-label" for="zipPrefix">ZIP 檔名前綴</label>
+          <input id="zipPrefix" type="text" value="DriveFetch" maxlength="40" />
+
+          <label class="field-label" for="exportProfile">Google 文件匯出格式</label>
+          <select id="exportProfile">
+            <option value="office">Office 格式：Docs→docx、Sheets→xlsx、Slides→pptx</option>
+            <option value="pdf">PDF 優先：Docs / Sheets / Slides → pdf</option>
+          </select>
+
+          <div class="settings-actions">
+            <button class="primary" id="saveSettingsBtn">儲存設定</button>
+            <button class="secondary" id="testAuthBtn">重新授權</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>GitHub Pages 更新</h2>
+          <p class="muted">程式會讀取 <code>version.json</code> 檢查版本。更新 GitHub repo 內檔案後，使用者重新開啟或按下檢查更新即可套用。</p>
+          <button class="secondary" id="checkUpdateBtn">檢查更新</button>
+          <div class="inline-status" id="updateStatus">尚未檢查</div>
+        </div>
+
+        <div class="card">
+          <h2>限制說明</h2>
+          <ul class="info-list">
+            <li>若公司網路禁止 Google Drive / Google API，本 PWA 也會被擋；請由 IT 以核准方式放行必要網域。</li>
+            <li>大型資料夾會受瀏覽器記憶體、Drive API 配額與檔案權限影響。</li>
+            <li>Google Workspace 原生檔案需匯出；非檔案型服務如 Forms 可能無法下載。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="view" id="viewHelp" aria-labelledby="helpTitle">
+        <div class="card">
+          <h2 id="helpTitle">使用流程</h2>
+          <ol class="step-list">
+            <li>在 Google Cloud Console 啟用 Google Drive API。</li>
+            <li>建立 OAuth 2.0「Web application」Client ID，授權來源加入 GitHub Pages 網址。</li>
+            <li>把 Client ID 貼到設定頁並儲存。</li>
+            <li>回到下載頁，登入 Google，貼上共用連結後掃描。</li>
+            <li>確認檔案清單後按「下載 ZIP」。</li>
+          </ol>
+        </div>
+
+        <div class="card">
+          <h2>支援連結</h2>
+          <div class="code-block">drive.google.com/drive/folders/&lt;folderId&gt;
+drive.google.com/file/d/&lt;fileId&gt;/view
+docs.google.com/document/d/&lt;fileId&gt;/edit
+docs.google.com/spreadsheets/d/&lt;fileId&gt;/edit
+docs.google.com/presentation/d/&lt;fileId&gt;/edit</div>
+        </div>
+
+        <div class="card">
+          <h2>合規替代方案</h2>
+          <p class="muted">若 Zscaler 擋下載，建議請 IT 建立正式例外規則、使用企業核准的 Google Workspace 存取方式、或改用公司核准的檔案交換平台。本工具不會也不能繞過資安代理。</p>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="主要導覽">
+      <button class="nav-btn active" data-target="viewDownload">下載</button>
+      <button class="nav-btn" data-target="viewSettings">設定</button>
+      <button class="nav-btn" data-target="viewHelp">說明</button>
+    </nav>
+  </div>
+</body>
+</html>
