@@ -1,9 +1,9 @@
-/* DriveFetch PWA V1_0
+/* DriveFetch PWA V1_1
  * 合規設計：僅透過 Google Drive API、公開權限與使用者 OAuth 授權下載。
  * 不包含繞過 Zscaler / Proxy / DLP / 公司資安控管的能力。
  */
 
-const APP_VERSION = 'V1_0';
+const APP_VERSION = 'V1_1';
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 const MIME_SHORTCUT = 'application/vnd.google-apps.shortcut';
 const GOOGLE_MIME_PREFIX = 'application/vnd.google-apps.';
@@ -54,6 +54,7 @@ const elements = {
   loginBtn: $('loginBtn'),
   scanBtn: $('scanBtn'),
   zipBtn: $('zipBtn'),
+  directDownloadBtn: $('directDownloadBtn'),
   clearBtn: $('clearBtn'),
   clientId: $('clientId'),
   apiKey: $('apiKey'),
@@ -83,7 +84,7 @@ function init() {
   bindEvents();
   elements.versionBadge.textContent = APP_VERSION;
   renderStats();
-  log('DriveFetch 已啟動。請先到「設定」填入 OAuth Web Client ID。');
+  log('DriveFetch V1_1 已啟動。單一檔案可用免 API 直連模式；資料夾批次下載仍需 OAuth / Drive API。');
   registerServiceWorker();
   setTimeout(checkForUpdatesSilent, 1200);
 }
@@ -98,6 +99,7 @@ function bindEvents() {
   elements.testAuthBtn.addEventListener('click', authorize);
   elements.scanBtn.addEventListener('click', scanCurrentUrl);
   elements.zipBtn.addEventListener('click', downloadZip);
+  elements.directDownloadBtn.addEventListener('click', downloadDirectFile);
   elements.clearBtn.addEventListener('click', resetResults);
   elements.checkUpdateBtn.addEventListener('click', checkForUpdatesManual);
 }
@@ -210,13 +212,29 @@ async function scanCurrentUrl() {
     return;
   }
   resetResults(false);
+
+  let target;
+  try {
+    target = extractDriveTarget(url);
+    if (!target?.id) throw new Error('無法解析此連結，請確認是否為 Google Drive / Docs / Sheets / Slides 共用網址。');
+  } catch (error) {
+    setProgress(0, '解析失敗');
+    log(`解析失敗：${error.message}`, 'error');
+    alert(error.message);
+    return;
+  }
+
+  const hasApiPath = Boolean(state.token || state.settings.apiKey || state.settings.clientId);
+  if (!hasApiPath) {
+    prepareDirectMode(target);
+    return;
+  }
+
   const accessOk = await ensureAccess();
   if (!accessOk) return;
 
   try {
     setBusy(true, '掃描中...');
-    const target = extractDriveTarget(url);
-    if (!target?.id) throw new Error('無法解析此連結，請確認是否為 Google Drive / Docs / Sheets / Slides 共用網址。');
     if (target.resourceKey) state.resourceKeys.set(target.id, target.resourceKey);
     log(`開始掃描：${target.id}`);
     const meta = await getFileMeta(target.id, target.resourceKey);
@@ -425,29 +443,144 @@ function extractDriveTarget(input) {
   let text = input.trim();
   if (!/^https?:\/\//i.test(text)) text = `https://${text}`;
   const url = new URL(text);
+  const host = url.hostname.replace(/^www\./i, '');
   const pathname = url.pathname;
   const params = url.searchParams;
   const resourceKey = params.get('resourcekey') || params.get('resourceKey') || '';
-  const patterns = [
-    /\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/,
-    /\/folders\/([a-zA-Z0-9_-]+)/,
-    /\/file\/d\/([a-zA-Z0-9_-]+)/,
-    /\/(?:document|spreadsheets|presentation|drawings|forms)\/d\/([a-zA-Z0-9_-]+)/,
-    /\/open\/([a-zA-Z0-9_-]+)/
-  ];
-  for (const pattern of patterns) {
-    const match = pathname.match(pattern);
-    if (match?.[1]) return { id: match[1], resourceKey };
+
+  const make = (id, kind, service = 'drive') => ({ id, kind, service, resourceKey, originalUrl: url.toString() });
+  const folderMatch = pathname.match(/\/drive\/(?:u\/\d+\/)?folders\/([a-zA-Z0-9_-]+)/) || pathname.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folderMatch?.[1]) return make(folderMatch[1], 'folder', 'drive');
+
+  const fileMatch = pathname.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch?.[1]) return make(fileMatch[1], 'file', 'drive');
+
+  const workspaceMatch = pathname.match(/\/(document|spreadsheets|presentation|drawings|forms)\/d\/([a-zA-Z0-9_-]+)/);
+  if (workspaceMatch?.[2]) {
+    const service = workspaceMatch[1];
+    const kindMap = { document: 'document', spreadsheets: 'spreadsheet', presentation: 'presentation', drawings: 'drawing', forms: 'form' };
+    return make(workspaceMatch[2], kindMap[service] || 'workspace', service);
   }
+
   const idParam = params.get('id');
-  if (idParam) return { id: idParam, resourceKey };
+  if (idParam) {
+    const kind = pathname.includes('/folders') ? 'folder' : 'file';
+    return make(idParam, kind, host.includes('docs.google.com') ? 'docs' : 'drive');
+  }
+
   throw new Error('找不到 Drive 檔案或資料夾 ID。');
+}
+
+function prepareDirectMode(target) {
+  state.directTarget = target;
+  renderStats();
+  renderDirectTarget(target);
+
+  if (target.kind === 'folder') {
+    elements.directDownloadBtn.disabled = true;
+    elements.zipBtn.disabled = true;
+    setProgress(0, '資料夾需 API / OAuth 才能列出檔案');
+    log('此連結是 Google Drive 資料夾。免 API 模式無法可靠列出資料夾內所有檔案；請到設定填入 OAuth Client ID 後再掃描。', 'warn');
+    return;
+  }
+
+  const directUrl = buildDirectDownloadUrl(target);
+  if (!directUrl) {
+    elements.directDownloadBtn.disabled = true;
+    setProgress(0, '此類型不支援免 API 直連下載');
+    log('此類型無法使用免 API 直連下載。請改用 OAuth / Drive API 模式。', 'warn');
+    return;
+  }
+
+  elements.directDownloadBtn.disabled = false;
+  elements.zipBtn.disabled = true;
+  setProgress(100, '已建立單一檔案直連');
+  log('已建立免 API 單一檔案直連。此模式只會開啟 Google 原生下載/匯出連結，不會繞過網路控管或權限限制。');
+}
+
+function buildDirectDownloadUrl(target) {
+  const id = encodeURIComponent(target.id);
+  const rk = target.resourceKey ? `&resourcekey=${encodeURIComponent(target.resourceKey)}` : '';
+  const pdfMode = state.settings.exportProfile === 'pdf';
+
+  switch (target.kind) {
+    case 'file':
+      return `https://drive.google.com/uc?export=download&id=${id}${rk}`;
+    case 'document':
+      return `https://docs.google.com/document/d/${id}/export?format=${pdfMode ? 'pdf' : 'docx'}`;
+    case 'spreadsheet':
+      return `https://docs.google.com/spreadsheets/d/${id}/export?format=${pdfMode ? 'pdf' : 'xlsx'}`;
+    case 'presentation':
+      return `https://docs.google.com/presentation/d/${id}/export/${pdfMode ? 'pdf' : 'pptx'}`;
+    case 'drawing':
+      return `https://docs.google.com/drawings/d/${id}/export/png`;
+    default:
+      return '';
+  }
+}
+
+function downloadDirectFile() {
+  const url = elements.driveUrl.value.trim();
+  if (!state.directTarget) {
+    try {
+      const target = extractDriveTarget(url);
+      prepareDirectMode(target);
+    } catch (error) {
+      alert(error.message);
+      log(`直連建立失敗：${error.message}`, 'error');
+      return;
+    }
+  }
+
+  const directUrl = buildDirectDownloadUrl(state.directTarget);
+  if (!directUrl) {
+    alert('此連結無法使用免 API 直連下載。資料夾與部分 Google 服務需使用 OAuth / Drive API。');
+    return;
+  }
+
+  const opened = window.open(directUrl, '_blank', 'noopener,noreferrer');
+  if (!opened) window.location.href = directUrl;
+  log('已開啟 Google 原生下載 / 匯出連結。若被公司網路或權限阻擋，需由 IT 或檔案擁有者處理。');
+}
+
+function renderDirectTarget(target) {
+  elements.fileList.innerHTML = '';
+  const directUrl = buildDirectDownloadUrl(target);
+  const typeLabel = getTargetTypeLabel(target.kind);
+  const row = document.createElement('div');
+  row.className = 'file-item direct-item';
+  row.innerHTML = `
+    <div class="file-type">${escapeHtml(typeLabel.slice(0, 4).toUpperCase())}</div>
+    <div class="file-main">
+      <div class="file-name">${escapeHtml(typeLabel)}：${escapeHtml(target.id)}</div>
+      <div class="file-path">${target.kind === 'folder' ? '資料夾清單需 Drive API；免 API 模式無法批次列出。' : '免 API 模式會開啟 Google 原生下載 / 匯出連結。'}</div>
+    </div>
+    <div class="file-size">${directUrl ? '直連' : '需 API'}</div>
+  `;
+  elements.fileList.appendChild(row);
+  elements.listHint.textContent = target.kind === 'folder'
+    ? '已辨識為資料夾。若要搜尋內部有幾個檔案並批次下載，必須使用 OAuth / Drive API。'
+    : '已辨識為單一檔案。可使用「單檔直連」由瀏覽器開啟 Google 下載頁。';
+}
+
+function getTargetTypeLabel(kind) {
+  return ({
+    folder: '資料夾',
+    file: '檔案',
+    document: 'Google Docs',
+    spreadsheet: 'Google Sheets',
+    presentation: 'Google Slides',
+    drawing: 'Google Drawing',
+    form: 'Google Forms'
+  })[kind] || 'Drive 項目';
 }
 
 function renderStats() {
   const totalSize = state.files.reduce((sum, file) => sum + (file.size || 0), 0);
-  elements.statFiles.textContent = String(state.files.length);
-  elements.statFolders.textContent = String(state.folders);
+  const directFileCount = state.directTarget && state.directTarget.kind !== 'folder' ? 1 : 0;
+  const directFolderCount = state.directTarget && state.directTarget.kind === 'folder' ? 1 : 0;
+  elements.statFiles.textContent = String(state.files.length || directFileCount);
+  elements.statFolders.textContent = String(state.folders || directFolderCount);
   elements.statSize.textContent = formatBytes(totalSize);
   elements.statSkipped.textContent = String(state.skipped.length);
   updateAuthBadge();
@@ -488,10 +621,12 @@ function resetResults(clearInput = true) {
   state.files = [];
   state.folders = 0;
   state.skipped = [];
+  state.directTarget = null;
   state.resourceKeys = new Map();
   if (clearInput) elements.driveUrl.value = '';
   elements.fileList.innerHTML = '';
   elements.zipBtn.disabled = true;
+  elements.directDownloadBtn.disabled = true;
   setProgress(0, '尚未開始');
   renderStats();
   log('已清除結果。');
@@ -499,8 +634,11 @@ function resetResults(clearInput = true) {
 
 function setBusy(busy, label = '') {
   state.busy = busy;
-  [elements.loginBtn, elements.scanBtn, elements.zipBtn, elements.saveSettingsBtn, elements.testAuthBtn].forEach((btn) => {
-    if (btn) btn.disabled = busy || (btn === elements.zipBtn && !state.files.length);
+  [elements.loginBtn, elements.scanBtn, elements.zipBtn, elements.directDownloadBtn, elements.saveSettingsBtn, elements.testAuthBtn].forEach((btn) => {
+    if (!btn) return;
+    if (btn === elements.zipBtn) btn.disabled = busy || !state.files.length;
+    else if (btn === elements.directDownloadBtn) btn.disabled = busy || !state.directTarget || !buildDirectDownloadUrl(state.directTarget);
+    else btn.disabled = busy;
   });
   if (label) setProgress(null, label);
 }

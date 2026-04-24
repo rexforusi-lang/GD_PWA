@@ -1,5 +1,5 @@
 {
-  "version": "V1_0",
+  "version": "V1_1",
   "releasedAt": "2026-04-24",
-  "notes": "Initial compliant Drive API batch downloader PWA."
+  "notes": "Add no-API single-file direct download mode while keeping OAuth Drive API batch ZIP mode."
 }

@@ -149,6 +149,7 @@ input:focus, textarea:focus, select:focus { border-color: rgba(96, 165, 250, 0.7
 
 .quick-actions, .settings-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 13px; }
 .quick-actions .success { grid-column: span 2; }
+.quick-actions #directDownloadBtn { color: var(--text); background: rgba(96, 165, 250, 0.14); border-color: rgba(96, 165, 250, 0.38); }
 button.primary, button.secondary, button.success, button.ghost {
   border-radius: 15px; font-weight: 850; letter-spacing: -0.01em;
 }
@@ -177,6 +178,7 @@ button.small { min-height: 34px; font-size: 12px; border-radius: 12px; }
 .file-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 850; }
 .file-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .file-size { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.direct-item { border-color: rgba(96, 165, 250, 0.42); background: rgba(96, 165, 250, 0.10); }
 
 pre#logBox {
   min-height: 96px; max-height: 220px; margin: 0; padding: 12px;

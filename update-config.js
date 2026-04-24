@@ -1,5 +1,5 @@
 window.DRIVEFETCH_UPDATE = {
-  currentVersion: 'V1_0',
+  currentVersion: 'V1_1',
   versionUrl: './version.json',
   updateMode: 'github-pages-cache-refresh'
 };

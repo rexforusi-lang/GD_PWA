@@ -1,4 +1,4 @@
-const CACHE_NAME = 'drivefetch-pwa-v1-0';
+const CACHE_NAME = 'drivefetch-pwa-v1-1';
 const APP_SHELL = [
   './',
   './index.html',

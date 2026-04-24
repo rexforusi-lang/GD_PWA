@@ -23,11 +23,11 @@
         <div class="app-icon" aria-hidden="true">DF</div>
         <div>
           <h1>DriveFetch</h1>
-          <p>Google Drive 共用檔案批次下載</p>
+          <p>Drive 單檔直連與授權批次下載</p>
         </div>
       </div>
       <div class="header-actions">
-        <span class="version-badge" id="versionBadge">V1_0</span>
+        <span class="version-badge" id="versionBadge">V1_1</span>
         <button class="icon-btn" id="themeToggle" aria-label="切換主題">◐</button>
       </div>
     </header>
@@ -36,14 +36,14 @@
       <section class="view active" id="viewDownload" aria-labelledby="downloadTitle">
         <div class="notice danger">
           <strong>合規限制</strong>
-          <span>本工具只使用 Google Drive 官方 API 與使用者授權，不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。</span>
+          <span>本工具不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。V1_1 新增免 API 單一檔案直連；資料夾批次下載仍需官方授權。</span>
         </div>
 
         <div class="card hero-card">
           <div class="section-title-row">
             <div>
               <h2 id="downloadTitle">輸入共用連結</h2>
-              <p>支援 Drive 資料夾、單一檔案、Google Docs / Sheets / Slides 連結。</p>
+              <p>單一檔案可免 API 開啟 Google 原生下載；資料夾掃描與 ZIP 批次下載需 OAuth / Drive API。</p>
             </div>
             <span class="mode-pill" id="authState">未授權</span>
           </div>
@@ -53,7 +53,8 @@
 
           <div class="quick-actions">
             <button class="primary" id="loginBtn">登入 Google</button>
-            <button class="secondary" id="scanBtn">掃描檔案</button>
+            <button class="secondary" id="scanBtn">分析 / 掃描</button>
+            <button class="secondary" id="directDownloadBtn" disabled>單檔直連</button>
             <button class="success" id="zipBtn" disabled>下載 ZIP</button>
           </div>
 
@@ -77,7 +78,7 @@
           <div class="section-title-row compact">
             <div>
               <h2>掃描結果</h2>
-              <p id="listHint">掃描後會列出將被打包下載的檔案。</p>
+              <p id="listHint">分析後會列出單檔直連或將被打包下載的檔案。</p>
             </div>
             <button class="ghost small" id="clearBtn">清除</button>
           </div>
@@ -98,7 +99,7 @@
       <section class="view" id="viewSettings" aria-labelledby="settingsTitle">
         <div class="card">
           <h2 id="settingsTitle">Google API 設定</h2>
-          <p class="muted">建議使用 OAuth Client ID。API Key 只適合公開分享檔案，且必須在 Google Cloud Console 限制網域與 API。</p>
+          <p class="muted">單一檔案可不填設定直接開啟 Google 原生下載。若要列出資料夾內容、遞迴掃描與打包 ZIP，建議使用 OAuth Client ID。</p>
 
           <label class="field-label" for="clientId">OAuth Web Client ID</label>
           <input id="clientId" type="text" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off" />
@@ -131,7 +132,7 @@
         <div class="card">
           <h2>限制說明</h2>
           <ul class="info-list">
-            <li>若公司網路禁止 Google Drive / Google API，本 PWA 也會被擋；請由 IT 以核准方式放行必要網域。</li>
+            <li>若公司網路禁止 Google Drive / Google API / Google Docs 匯出連結，本 PWA 也會被擋；請由 IT 以核准方式放行必要網域。</li>
             <li>大型資料夾會受瀏覽器記憶體、Drive API 配額與檔案權限影響。</li>
             <li>Google Workspace 原生檔案需匯出；非檔案型服務如 Forms 可能無法下載。</li>
           </ul>
@@ -142,11 +143,11 @@
         <div class="card">
           <h2 id="helpTitle">使用流程</h2>
           <ol class="step-list">
-            <li>在 Google Cloud Console 啟用 Google Drive API。</li>
+            <li>若是單一檔案：貼上分享連結，按「分析 / 掃描」，再按「單檔直連」。</li>
+            <li>若是資料夾或要批次 ZIP：在 Google Cloud Console 啟用 Google Drive API。</li>
             <li>建立 OAuth 2.0「Web application」Client ID，授權來源加入 GitHub Pages 網址。</li>
             <li>把 Client ID 貼到設定頁並儲存。</li>
-            <li>回到下載頁，登入 Google，貼上共用連結後掃描。</li>
-            <li>確認檔案清單後按「下載 ZIP」。</li>
+            <li>回到下載頁，登入 Google，貼上共用連結後掃描，確認檔案清單後按「下載 ZIP」。</li>
           </ol>
         </div>
 
@@ -154,6 +155,7 @@
           <h2>支援連結</h2>
           <div class="code-block">drive.google.com/drive/folders/&lt;folderId&gt;
 drive.google.com/file/d/&lt;fileId&gt;/view
+drive.google.com/uc?id=&lt;fileId&gt;&amp;export=download
 docs.google.com/document/d/&lt;fileId&gt;/edit
 docs.google.com/spreadsheets/d/&lt;fileId&gt;/edit
 docs.google.com/presentation/d/&lt;fileId&gt;/edit</div>
@@ -161,7 +163,7 @@ docs.google.com/presentation/d/&lt;fileId&gt;/edit</div>
 
         <div class="card">
           <h2>合規替代方案</h2>
-          <p class="muted">若 Zscaler 擋下載，建議請 IT 建立正式例外規則、使用企業核准的 Google Workspace 存取方式、或改用公司核准的檔案交換平台。本工具不會也不能繞過資安代理。</p>
+          <p class="muted">若 Zscaler 擋下載，建議請 IT 建立正式例外規則、使用企業核准的 Google Workspace 存取方式、或改用公司核准的檔案交換平台。本工具不會也不能繞過資安代理；免 API 直連也只是開啟 Google 官方下載頁。</p>
         </div>
       </section>
     </main>
