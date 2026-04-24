@@ -1,7 +1,7 @@
 {
   "name": "DriveFetch PWA",
   "short_name": "DriveFetch",
-  "description": "Google Drive single-file direct opener and authorized batch downloader.",
+  "description": "Google Drive single-file direct opener and authorized 1GB split batch downloader.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

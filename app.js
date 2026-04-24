@@ -1,13 +1,15 @@
-/* DriveFetch PWA V1_1
+/* DriveFetch PWA V1_2
  * 合規設計：僅透過 Google Drive API、公開權限與使用者 OAuth 授權下載。
  * 不包含繞過 Zscaler / Proxy / DLP / 公司資安控管的能力。
  */
 
-const APP_VERSION = 'V1_1';
+const APP_VERSION = 'V1_2';
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 const MIME_SHORTCUT = 'application/vnd.google-apps.shortcut';
 const GOOGLE_MIME_PREFIX = 'application/vnd.google-apps.';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const SPLIT_ZIP_LIMIT_BYTES = 1024 * 1024 * 1024;
+const SPLIT_ZIP_LIMIT_LABEL = '1GB';
 
 const EXPORT_PROFILES = {
   office: {
@@ -34,6 +36,8 @@ const state = {
   folders: 0,
   skipped: [],
   resourceKeys: new Map(),
+  parts: [],
+  directTarget: null,
   settings: {
     clientId: '',
     apiKey: '',
@@ -73,6 +77,9 @@ const elements = {
   progressBar: $('progressBar'),
   fileList: $('fileList'),
   listHint: $('listHint'),
+  splitHint: $('splitHint'),
+  partList: $('partList'),
+  splitSizeLabel: $('splitSizeLabel'),
   logBox: $('logBox'),
 };
 
@@ -84,7 +91,8 @@ function init() {
   bindEvents();
   elements.versionBadge.textContent = APP_VERSION;
   renderStats();
-  log('DriveFetch V1_1 已啟動。單一檔案可用免 API 直連模式；資料夾批次下載仍需 OAuth / Drive API。');
+  renderPartLinks();
+  log('DriveFetch V1_2 已啟動。批次下載會建立每包約 1GB 的獨立 ZIP 分割檔；資料夾仍需 OAuth / Drive API。');
   registerServiceWorker();
   setTimeout(checkForUpdatesSilent, 1200);
 }
@@ -241,7 +249,7 @@ async function scanCurrentUrl() {
     await walkDriveItem(meta, '', target.resourceKey);
     renderStats();
     renderFileList();
-    setProgress(100, `掃描完成：${state.files.length} 個檔案`);
+    setProgress(100, `掃描完成：${state.files.length} 個檔案，可建立 ${SPLIT_ZIP_LIMIT_LABEL} 分割 ZIP`);
     elements.zipBtn.disabled = state.files.length === 0;
     if (state.files.length === 0) log('沒有可下載的檔案。請確認分享權限與授權帳號。', 'warn');
   } catch (error) {
@@ -384,22 +392,67 @@ async function downloadZip() {
   if (!accessOk) return;
 
   const estimatedSize = state.files.reduce((sum, file) => sum + (file.size || 0), 0);
-  if (estimatedSize > 1500 * 1024 * 1024) {
-    const ok = confirm('可估大小超過 1.5GB，瀏覽器可能因記憶體不足失敗。仍要嘗試打包 ZIP 嗎？');
-    if (!ok) return;
-  }
+  const estimatedParts = Math.max(1, Math.ceil(estimatedSize / SPLIT_ZIP_LIMIT_BYTES));
+  const ok = confirm(`將建立多個獨立 ZIP 分割檔，每包目標上限約 ${SPLIT_ZIP_LIMIT_LABEL}。\n\n可估大小：${formatBytes(estimatedSize)}\n預估分割包：${estimatedParts} 包\n\n大型檔案仍會受到瀏覽器記憶體與 Drive 權限限制。是否開始？`);
+  if (!ok) return;
 
   try {
-    setBusy(true, '下載中...');
-    const zip = new SimpleZip();
+    setBusy(true, '建立分割 ZIP 中...');
+    clearPartLinks();
+    renderPartLinks();
+
+    let zip = new SimpleZip();
+    let currentFiles = [];
+    let currentBytes = 0;
+    let partIndex = 1;
     let completed = 0;
+    const timestamp = formatTimestamp(new Date());
+    const baseName = sanitizeName(state.settings.zipPrefix || 'DriveFetch');
+
+    const finalizePart = (overLimit = false) => {
+      if (!currentFiles.length) return;
+      setProgress(null, `產生分割檔 ${partIndex}...`);
+      const zipBlob = zip.toBlob();
+      const fileName = `${baseName}_${timestamp}_part${String(partIndex).padStart(3, '0')}.zip`;
+      const url = URL.createObjectURL(zipBlob);
+      const part = {
+        index: partIndex,
+        fileName,
+        url,
+        size: zipBlob.size,
+        count: currentFiles.length,
+        overLimit,
+        files: currentFiles.map((file) => file.zipPath)
+      };
+      state.parts.push(part);
+      renderPartLinks();
+      log(`已建立分割檔：${fileName}｜${formatBytes(zipBlob.size)}｜${currentFiles.length} 個檔案${overLimit ? '｜單檔超過 1GB' : ''}`);
+
+      zip = new SimpleZip();
+      currentFiles = [];
+      currentBytes = 0;
+      partIndex += 1;
+    };
+
     for (const file of state.files) {
       setProgress(Math.round((completed / state.files.length) * 90), `下載中：${file.zipPath}`);
       try {
         const blob = await fetchFileBlob(file);
         const bytes = new Uint8Array(await blob.arrayBuffer());
+        const incomingSize = bytes.byteLength;
+
+        if (currentFiles.length && currentBytes + incomingSize > SPLIT_ZIP_LIMIT_BYTES) {
+          finalizePart(false);
+        }
+
         zip.addFile(file.zipPath, bytes, file.modifiedTime);
-        log(`已加入 ZIP：${file.zipPath}`);
+        currentFiles.push({ ...file, actualSize: incomingSize });
+        currentBytes += incomingSize;
+        log(`已加入分割 ZIP：${file.zipPath}｜${formatBytes(incomingSize)}`);
+
+        if (incomingSize > SPLIT_ZIP_LIMIT_BYTES) {
+          finalizePart(true);
+        }
       } catch (error) {
         state.skipped.push({ name: file.name, reason: `下載失敗：${error.message}` });
         log(`下載失敗：${file.zipPath}｜${error.message}`, 'error');
@@ -408,14 +461,20 @@ async function downloadZip() {
       renderStats();
     }
 
-    setProgress(94, '建立 ZIP 中...');
-    const zipBlob = zip.toBlob();
-    const fileName = `${sanitizeName(state.settings.zipPrefix || 'DriveFetch')}_${formatTimestamp(new Date())}.zip`;
-    triggerDownload(zipBlob, fileName);
-    setProgress(100, `ZIP 已建立：${fileName}`);
-    log(`完成：${fileName}`);
+    setProgress(94, '建立最後分割檔...');
+    finalizePart(false);
+
+    if (!state.parts.length) {
+      setProgress(0, '沒有成功建立任何分割檔');
+      log('沒有成功建立任何分割檔，請查看錯誤紀錄。', 'warn');
+      return;
+    }
+
+    setProgress(100, `已建立 ${state.parts.length} 個分割檔`);
+    elements.splitHint.textContent = `已建立 ${state.parts.length} 個獨立 ZIP 分割檔，請逐一點擊下載。Object URL 只在本次頁面開啟期間有效。`;
+    log(`完成：共 ${state.parts.length} 個分割 ZIP 檔。請從「分割檔下載」區塊逐一下載。`);
   } catch (error) {
-    log(`ZIP 建立失敗：${error.message}`, 'error');
+    log(`分割 ZIP 建立失敗：${error.message}`, 'error');
     alert(error.message);
   } finally {
     setBusy(false);
@@ -592,7 +651,7 @@ function renderFileList() {
     elements.listHint.textContent = state.skipped.length ? '沒有可下載檔案；請查看執行紀錄。' : '掃描後會列出將被打包下載的檔案。';
     return;
   }
-  elements.listHint.textContent = `共 ${state.files.length} 個檔案將被打包。`;
+  elements.listHint.textContent = `共 ${state.files.length} 個檔案將依每包約 1GB 建立分割 ZIP。`;
   const frag = document.createDocumentFragment();
   state.files.slice(0, 250).forEach((file) => {
     const row = document.createElement('div');
@@ -617,16 +676,57 @@ function renderFileList() {
   elements.fileList.appendChild(frag);
 }
 
+function clearPartLinks() {
+  if (Array.isArray(state.parts)) {
+    state.parts.forEach((part) => {
+      if (part?.url) URL.revokeObjectURL(part.url);
+    });
+  }
+  state.parts = [];
+}
+
+function renderPartLinks() {
+  if (!elements.partList || !elements.splitHint) return;
+  elements.partList.innerHTML = '';
+  if (!state.parts.length) {
+    elements.splitHint.textContent = `建立後會在此產生每個分割 ZIP 的下載連結。目標大小：每包約 ${SPLIT_ZIP_LIMIT_LABEL}。`;
+    return;
+  }
+
+  elements.splitHint.textContent = `共 ${state.parts.length} 個分割檔。請在離開或重新整理頁面前完成下載。`;
+  const frag = document.createDocumentFragment();
+  state.parts.forEach((part) => {
+    const row = document.createElement('div');
+    row.className = `part-item${part.overLimit ? ' over-limit' : ''}`;
+    const preview = (part.files || []).slice(0, 3).map((name) => escapeHtml(name)).join('<br>');
+    const more = part.files && part.files.length > 3 ? `<br>另有 ${part.files.length - 3} 個檔案...` : '';
+    row.innerHTML = `
+      <div class="part-index">${String(part.index).padStart(2, '0')}</div>
+      <div class="part-main">
+        <div class="part-name">${escapeHtml(part.fileName)}</div>
+        <div class="part-meta">${formatBytes(part.size)}｜${part.count} 個檔案${part.overLimit ? '｜單一檔案超過 1GB，已獨立成包' : ''}</div>
+        <div class="part-files">${preview}${more}</div>
+      </div>
+      <a class="download-link" href="${part.url}" download="${escapeHtml(part.fileName)}">下載</a>
+    `;
+    frag.appendChild(row);
+  });
+  elements.partList.appendChild(frag);
+}
+
 function resetResults(clearInput = true) {
+  clearPartLinks();
   state.files = [];
   state.folders = 0;
   state.skipped = [];
   state.directTarget = null;
   state.resourceKeys = new Map();
+  state.parts = [];
   if (clearInput) elements.driveUrl.value = '';
   elements.fileList.innerHTML = '';
   elements.zipBtn.disabled = true;
   elements.directDownloadBtn.disabled = true;
+  renderPartLinks();
   setProgress(0, '尚未開始');
   renderStats();
   log('已清除結果。');

@@ -1,5 +1,5 @@
 {
-  "version": "V1_1",
+  "version": "V1_2",
   "releasedAt": "2026-04-24",
-  "notes": "Add no-API single-file direct download mode while keeping OAuth Drive API batch ZIP mode."
+  "notes": "Add 1GB split ZIP package generation with per-part download links while keeping no-API single-file direct mode."
 }

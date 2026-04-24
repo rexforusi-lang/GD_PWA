@@ -23,11 +23,11 @@
         <div class="app-icon" aria-hidden="true">DF</div>
         <div>
           <h1>DriveFetch</h1>
-          <p>Drive 單檔直連與授權批次下載</p>
+          <p>Drive 單檔直連與 1GB 分割下載</p>
         </div>
       </div>
       <div class="header-actions">
-        <span class="version-badge" id="versionBadge">V1_1</span>
+        <span class="version-badge" id="versionBadge">V1_2</span>
         <button class="icon-btn" id="themeToggle" aria-label="切換主題">◐</button>
       </div>
     </header>
@@ -36,14 +36,14 @@
       <section class="view active" id="viewDownload" aria-labelledby="downloadTitle">
         <div class="notice danger">
           <strong>合規限制</strong>
-          <span>本工具不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。V1_1 新增免 API 單一檔案直連；資料夾批次下載仍需官方授權。</span>
+          <span>本工具不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。V1_2 新增每包約 1GB 的分割 ZIP 下載連結；資料夾批次下載仍需官方授權。</span>
         </div>
 
         <div class="card hero-card">
           <div class="section-title-row">
             <div>
               <h2 id="downloadTitle">輸入共用連結</h2>
-              <p>單一檔案可免 API 開啟 Google 原生下載；資料夾掃描與 ZIP 批次下載需 OAuth / Drive API。</p>
+              <p>單一檔案可免 API 開啟 Google 原生下載；資料夾掃描與每 1GB 分割 ZIP 需 OAuth / Drive API。</p>
             </div>
             <span class="mode-pill" id="authState">未授權</span>
           </div>
@@ -55,7 +55,7 @@
             <button class="primary" id="loginBtn">登入 Google</button>
             <button class="secondary" id="scanBtn">分析 / 掃描</button>
             <button class="secondary" id="directDownloadBtn" disabled>單檔直連</button>
-            <button class="success" id="zipBtn" disabled>下載 ZIP</button>
+            <button class="success" id="zipBtn" disabled>建立 1GB 分割檔</button>
           </div>
 
           <div class="mini-grid">
@@ -72,6 +72,18 @@
             <span id="progressPct">0%</span>
           </div>
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+          <p class="split-note">批次下載會建立多個獨立 ZIP 檔，每包目標上限約 1GB；單一檔案超過 1GB 時會獨立成一包。</p>
+        </div>
+
+        <div class="card split-card">
+          <div class="section-title-row compact">
+            <div>
+              <h2>分割檔下載</h2>
+              <p id="splitHint">建立後會在此產生每個分割 ZIP 的下載連結。</p>
+            </div>
+            <span class="split-size-pill" id="splitSizeLabel">1GB / 包</span>
+          </div>
+          <div class="part-list" id="partList"></div>
         </div>
 
         <div class="card list-card">
@@ -133,7 +145,7 @@
           <h2>限制說明</h2>
           <ul class="info-list">
             <li>若公司網路禁止 Google Drive / Google API / Google Docs 匯出連結，本 PWA 也會被擋；請由 IT 以核准方式放行必要網域。</li>
-            <li>大型資料夾會受瀏覽器記憶體、Drive API 配額與檔案權限影響。</li>
+            <li>大型資料夾會受瀏覽器記憶體、Drive API 配額與檔案權限影響；V1_2 會把批次輸出拆成約 1GB 的多個獨立 ZIP 檔。</li>
             <li>Google Workspace 原生檔案需匯出；非檔案型服務如 Forms 可能無法下載。</li>
           </ul>
         </div>
@@ -147,7 +159,7 @@
             <li>若是資料夾或要批次 ZIP：在 Google Cloud Console 啟用 Google Drive API。</li>
             <li>建立 OAuth 2.0「Web application」Client ID，授權來源加入 GitHub Pages 網址。</li>
             <li>把 Client ID 貼到設定頁並儲存。</li>
-            <li>回到下載頁，登入 Google，貼上共用連結後掃描，確認檔案清單後按「下載 ZIP」。</li>
+            <li>回到下載頁，登入 Google，貼上共用連結後掃描，確認檔案清單後按「建立 1GB 分割檔」，再逐一點擊分割檔連結下載。</li>
           </ol>
         </div>
 
