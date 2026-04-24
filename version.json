@@ -1,5 +1,5 @@
 {
-  "version": "V1_4",
+  "version": "V1_5",
   "releasedAt": "2026-04-24",
-  "notes": "Add selectable file list, 100-files-or-1GB split ZIP rule, and OAuth token refresh/retry for Drive API 401."
+  "notes": "Add continuous package build/download mode, configurable files-per-package up to 100, and automatic release of downloaded Blob URLs so later parts can continue."
 }

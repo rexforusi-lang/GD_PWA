@@ -23,11 +23,11 @@
         <div class="app-icon" aria-hidden="true">DF</div>
         <div>
           <h1>DriveFetch</h1>
-          <p>Drive 單檔直連、勾選下載與分割打包</p>
+          <p>Drive 單檔直連、勾選下載與連續分包</p>
         </div>
       </div>
       <div class="header-actions">
-        <span class="version-badge" id="versionBadge">V1_4</span>
+        <span class="version-badge" id="versionBadge">V1_5</span>
         <button class="icon-btn" id="themeToggle" aria-label="切換主題">◐</button>
       </div>
     </header>
@@ -36,7 +36,7 @@
       <section class="view active" id="viewDownload" aria-labelledby="downloadTitle">
         <div class="notice danger">
           <strong>合規限制</strong>
-          <span>本工具不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。V1_4 採用低記憶體分割流程：可勾選檔案，每包最多 100 個檔案；若超過 1GB 則優先以 1GB 分包。</span>
+          <span>本工具不提供繞過 Zscaler、公司資安政策或網路封鎖的功能。V1_5 採用低記憶體連續分割流程：可勾選檔案，每包最多 100 個檔案；若超過 1GB 則優先以 1GB 分包，並支援連續建立/下載。</span>
         </div>
 
         <div class="card hero-card">
@@ -56,6 +56,7 @@
             <button class="secondary" id="scanBtn">分析 / 掃描</button>
             <button class="secondary" id="directDownloadBtn" disabled>單檔直連</button>
             <button class="success" id="zipBtn" disabled>建立第 1 包</button>
+            <button class="success alt" id="autoBuildBtn" disabled>連續建立/下載</button>
           </div>
 
           <div class="mini-grid">
@@ -72,17 +73,24 @@
             <span id="progressPct">0%</span>
           </div>
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
-          <p class="split-note">V1_4 採逐包建立流程：先依勾選檔案建立分割包；每包最多 100 檔，若累計超過 1GB 則先分包。單一檔案超過 1GB 時會獨立成一包。</p>
+          <p class="split-note">V1_5 採逐包或連續建立流程：先依勾選檔案建立分割包；每包最多 100 檔，若累計超過 1GB 則先分包。單一檔案超過 1GB 時會獨立成一包。</p>
         </div>
 
         <div class="card split-card">
           <div class="section-title-row compact">
             <div>
               <h2>分割檔下載</h2>
-              <p id="splitHint">建立後會在此產生目前分割 ZIP 的下載連結；下載後請釋放暫存。</p>
+              <p id="splitHint">建立後會在此產生分割 ZIP 下載連結；手動模式會自動釋放已下載暫存，連續模式可自動下載、釋放並接續下一包。</p>
             </div>
             <div class="split-tools">
               <span class="split-size-pill" id="splitSizeLabel">1GB / 包</span>
+              <label class="mini-control">每包檔案
+                <input id="filesPerPartLimit" type="number" min="1" max="100" value="100" inputmode="numeric" />
+              </label>
+              <label class="mini-control">連續包數
+                <input id="autoPartCount" type="number" min="1" max="10" value="3" inputmode="numeric" />
+              </label>
+              <label class="mini-check"><input id="autoDownloadToggle" type="checkbox" checked /> 自動觸發下載</label>
               <button class="ghost small" id="clearTempBtn" disabled>清除暫存</button>
             </div>
           </div>
@@ -156,7 +164,7 @@
           <h2>限制說明</h2>
           <ul class="info-list">
             <li>若公司網路禁止 Google Drive / Google API / Google Docs 匯出連結，本 PWA 也會被擋；請由 IT 以核准方式放行必要網域。</li>
-            <li>大型資料夾會受瀏覽器記憶體、Drive API 配額、檔案權限與 OAuth token 時效影響；V1_4 採逐包建立、100 檔 / 1GB 分包、下載後釋放暫存，避免一次保留所有 ZIP Blob。</li>
+            <li>大型資料夾會受瀏覽器記憶體、Drive API 配額、檔案權限與 OAuth token 時效影響；V1_5 採逐包或連續建立、最多 100 檔 / 1GB 分包、下載後自動或手動釋放暫存，避免一次保留所有 ZIP Blob。</li>
             <li>Google Workspace 原生檔案需匯出；非檔案型服務如 Forms 可能無法下載。</li>
           </ul>
         </div>
@@ -170,7 +178,7 @@
             <li>若是資料夾或要批次 ZIP：在 Google Cloud Console 啟用 Google Drive API。</li>
             <li>建立 OAuth 2.0「Web application」Client ID，授權來源加入 GitHub Pages 網址。</li>
             <li>把 Client ID 貼到設定頁並儲存。</li>
-            <li>回到下載頁，登入 Google，貼上共用連結後掃描，勾選要下載的檔案，按「建立第 1 包」，下載完成後按「釋放暫存」，再建立下一包。</li>
+            <li>回到下載頁，登入 Google，貼上共用連結後掃描，勾選要下載的檔案；可按「建立第 1 包」手動逐包處理，或設定連續包數後按「連續建立/下載」。</li>
           </ol>
         </div>
 

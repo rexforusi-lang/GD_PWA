@@ -1,7 +1,7 @@
 {
   "name": "DriveFetch PWA",
   "short_name": "DriveFetch",
-  "description": "Google Drive single-file direct opener and authorized selectable 100-file/1GB split ZIP downloader.",
+  "description": "Google Drive single-file direct opener and authorized selectable 100-file/1GB continuous split ZIP downloader.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

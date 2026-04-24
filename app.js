@@ -1,16 +1,19 @@
-/* DriveFetch PWA V1_4
+/* DriveFetch PWA V1_5
  * 合規設計：僅透過 Google Drive API、公開權限與使用者 OAuth 授權下載。
  * 不包含繞過 Zscaler / Proxy / DLP / 公司資安控管的能力。
  */
 
-const APP_VERSION = 'V1_4';
+const APP_VERSION = 'V1_5';
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 const MIME_SHORTCUT = 'application/vnd.google-apps.shortcut';
 const GOOGLE_MIME_PREFIX = 'application/vnd.google-apps.';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const SPLIT_ZIP_LIMIT_BYTES = 1024 * 1024 * 1024;
 const SPLIT_ZIP_LIMIT_LABEL = '1GB';
-const MAX_FILES_PER_PART = 100;
+const DEFAULT_MAX_FILES_PER_PART = 100;
+const HARD_MAX_FILES_PER_PART = 100;
+const AUTO_RELEASE_DELAY_MS = 8000;
+const MAX_CONTINUOUS_PARTS = 10;
 const TOKEN_REFRESH_BUFFER_MS = 3 * 60 * 1000;
 
 const EXPORT_PROFILES = {
@@ -42,6 +45,7 @@ const state = {
   resourceKeys: new Map(),
   parts: [],
   buildSession: null,
+  autoQueue: { running: false, cancelled: false, requested: 0, built: 0 },
   directTarget: null,
   settings: {
     clientId: '',
@@ -85,6 +89,10 @@ const elements = {
   splitHint: $('splitHint'),
   partList: $('partList'),
   splitSizeLabel: $('splitSizeLabel'),
+  filesPerPartLimit: $('filesPerPartLimit'),
+  autoPartCount: $('autoPartCount'),
+  autoDownloadToggle: $('autoDownloadToggle'),
+  autoBuildBtn: $('autoBuildBtn'),
   selectedSummary: $('selectedSummary'),
   selectAllBtn: $('selectAllBtn'),
   selectNoneBtn: $('selectNoneBtn'),
@@ -102,7 +110,7 @@ function init() {
   elements.versionBadge.textContent = APP_VERSION;
   renderStats();
   renderPartLinks();
-  log('DriveFetch V1_4 已啟動。批次下載採勾選清單與 100 檔 / 1GB 逐包建立流程。');
+  log('DriveFetch V1_5 已啟動。支援 100 檔 / 1GB 分包、勾選下載、連續建立與自動釋放暫存。');
   registerServiceWorker();
   setTimeout(checkForUpdatesSilent, 1200);
 }
@@ -117,8 +125,16 @@ function bindEvents() {
   elements.testAuthBtn.addEventListener('click', authorize);
   elements.scanBtn.addEventListener('click', scanCurrentUrl);
   elements.zipBtn.addEventListener('click', downloadZip);
+  elements.autoBuildBtn?.addEventListener('click', startContinuousBuild);
   elements.directDownloadBtn.addEventListener('click', downloadDirectFile);
   elements.clearTempBtn?.addEventListener('click', releaseAllPartUrls);
+  elements.filesPerPartLimit?.addEventListener('change', () => {
+    elements.filesPerPartLimit.value = String(getMaxFilesPerPart());
+    if (state.buildSession) {
+      alert('分割檔建立流程已開始；此設定會在下一次清除結果並重新建立時套用。');
+    }
+    updateSelectionSummary();
+  });
   elements.partList?.addEventListener('click', handlePartAction);
   elements.fileList?.addEventListener('change', handleFileSelectionChange);
   elements.selectAllBtn?.addEventListener('click', () => setAllSelections(true));
@@ -318,7 +334,7 @@ async function scanCurrentUrl() {
     state.selectedFileIds = new Set(state.files.map((file) => file.uid));
     renderStats();
     renderFileList();
-    setProgress(100, `掃描完成：${state.files.length} 個檔案，已預設全選，可依 100 檔 / ${SPLIT_ZIP_LIMIT_LABEL} 規則逐包建立 ZIP`);
+    setProgress(100, `掃描完成：${state.files.length} 個檔案，已預設全選，可依最多 ${getMaxFilesPerPart()} 檔 / ${SPLIT_ZIP_LIMIT_LABEL} 規則建立 ZIP`);
     elements.zipBtn.disabled = state.files.length === 0;
     updateZipButtonLabel();
     if (state.files.length === 0) log('沒有可下載的檔案。請確認分享權限與授權帳號。', 'warn');
@@ -489,41 +505,125 @@ function buildResourceKeyHeader(itemId, resourceKey) {
 }
 
 async function downloadZip() {
+  if (state.busy || !state.files.length || state.autoQueue.running) return;
+  const prepared = await prepareBuildSession({ mode: 'manual' });
+  if (!prepared) return;
+  await buildNextPart({ mode: 'manual' });
+}
+
+async function startContinuousBuild() {
+  if (state.autoQueue.running) {
+    state.autoQueue.cancelled = true;
+    if (elements.autoBuildBtn) elements.autoBuildBtn.textContent = '停止中...';
+    log('已要求停止連續模式；目前這包完成後會停止。', 'warn');
+    return;
+  }
   if (state.busy || !state.files.length) return;
+
+  const requestedParts = clampNumber(Number(elements.autoPartCount?.value || 3), 1, MAX_CONTINUOUS_PARTS);
+  if (elements.autoPartCount) elements.autoPartCount.value = String(requestedParts);
+
+  const prepared = await prepareBuildSession({ mode: 'auto', requestedParts });
+  if (!prepared) return;
+
+  state.autoQueue = { running: true, cancelled: false, requested: requestedParts, built: 0 };
+  if (elements.autoBuildBtn) elements.autoBuildBtn.textContent = '停止連續';
+  updateZipButtonLabel();
+  renderPartLinks();
+
+  const autoDownload = elements.autoDownloadToggle?.checked !== false;
+  log(`連續模式開始：本次最多處理 ${requestedParts} 包；${autoDownload ? '建立後自動觸發下載並釋放暫存' : '只建立下載連結，不自動觸發下載'}。`);
+
+  try {
+    for (let i = 0; i < requestedParts; i += 1) {
+      if (state.autoQueue.cancelled) break;
+      if (state.buildSession?.done || state.buildSession?.cursor >= state.buildSession?.files?.length) break;
+
+      const part = await buildNextPart({ mode: 'auto', allowAutoReleaseDownloaded: true });
+      if (!part) break;
+      state.autoQueue.built += 1;
+
+      if (autoDownload && part.url) {
+        triggerPartDownload(part.index, true);
+        setProgress(null, `第 ${part.index} 包已觸發下載；${Math.round(AUTO_RELEASE_DELAY_MS / 1000)} 秒後自動釋放暫存並接續下一包`);
+        await sleep(AUTO_RELEASE_DELAY_MS);
+        releasePartUrl(part.index, { skipConfirm: true, auto: true });
+      } else {
+        log(`第 ${part.index} 包已建立；因未啟用自動下載，連續模式暫停，請手動下載/釋放後再繼續。`, 'warn');
+        break;
+      }
+
+      await sleep(250);
+    }
+  } catch (error) {
+    log(`連續模式中斷：${error.message}`, 'error');
+    alert(error.message);
+  } finally {
+    const built = state.autoQueue.built;
+    const cancelled = state.autoQueue.cancelled;
+    state.autoQueue = { running: false, cancelled: false, requested: 0, built: 0 };
+    if (elements.autoBuildBtn) elements.autoBuildBtn.textContent = '連續建立/下載';
+    updateZipButtonLabel();
+    renderPartLinks();
+    if (state.buildSession?.done) {
+      setProgress(100, '所有勾選檔案已建立完成');
+      log(`連續模式完成：本次建立 ${built} 包，全部勾選檔案已處理。`);
+    } else if (cancelled) {
+      log(`連續模式已停止：本次建立 ${built} 包。`, 'warn');
+    } else {
+      log(`連續模式結束：本次建立 ${built} 包。`);
+    }
+  }
+}
+
+async function prepareBuildSession({ mode = 'manual', requestedParts = 1 } = {}) {
   const selectedFiles = getSelectedFiles();
   if (!selectedFiles.length) {
     alert('請至少勾選 1 個要下載的檔案。');
-    return;
+    return false;
   }
 
   const accessOk = await ensureAccess();
-  if (!accessOk) return;
+  if (!accessOk) return false;
 
   if (!state.buildSession) {
+    const maxFiles = getMaxFilesPerPart();
     const estimatedSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
     const estimatedParts = estimatePartCount(selectedFiles);
-    const ok = confirm(`V1_4 將依目前勾選的檔案建立 ZIP：\n\n規則：每包最多 ${MAX_FILES_PER_PART} 個檔案；若未滿 ${MAX_FILES_PER_PART} 個但累計超過 ${SPLIT_ZIP_LIMIT_LABEL}，會先以 ${SPLIT_ZIP_LIMIT_LABEL} 分包。\n\n已勾選：${selectedFiles.length} / ${state.files.length} 個檔案\n可估大小：${formatBytes(estimatedSize)}\n預估分割包：${estimatedParts} 包\n\n是否開始？`);
-    if (!ok) return;
+    const modeText = mode === 'auto'
+      ? `連續模式本次最多會自動處理 ${requestedParts} 包。瀏覽器可能會要求允許多檔下載；若被阻擋，仍可用畫面上的下載連結手動下載。`
+      : '手動模式會一次建立一包。下載後再次按「建立下一包」時，已標記下載的上一包會自動釋放暫存。';
+    const ok = confirm(`V1_5 將依目前勾選的檔案建立 ZIP：\n\n規則：每包最多 ${maxFiles} 個檔案；若未滿 ${maxFiles} 個但累計超過 ${SPLIT_ZIP_LIMIT_LABEL}，會先以 ${SPLIT_ZIP_LIMIT_LABEL} 分包。\n\n已勾選：${selectedFiles.length} / ${state.files.length} 個檔案\n可估大小：${formatBytes(estimatedSize)}\n預估分割包：${estimatedParts} 包\n\n${modeText}\n\n是否開始？`);
+    if (!ok) return false;
     clearPartLinks();
     state.buildSession = createBuildSession(selectedFiles);
     renderPartLinks();
     setSelectionControlsDisabled(true);
   }
+  return true;
+}
 
-  const activeParts = getActiveBlobParts();
-  if (activeParts.length) {
-    alert('目前仍有分割 ZIP 暫存在瀏覽器記憶體中。請先下載並按「釋放暫存」後，再建立下一包。');
-    log('為避免 iOS / 瀏覽器記憶體過高，請先釋放目前分割檔暫存後再建立下一包。', 'warn');
-    return;
+async function buildNextPart({ mode = 'manual', allowAutoReleaseDownloaded = true } = {}) {
+  if (state.busy || !state.buildSession) return null;
+  const session = state.buildSession;
+  const maxFiles = session.maxFilesPerPart || getMaxFilesPerPart();
+
+  if (allowAutoReleaseDownloaded) releaseDownloadedActivePartsSilently();
+
+  const blockingParts = getBlockingActiveBlobParts();
+  if (blockingParts.length) {
+    const message = '目前仍有尚未下載的分割 ZIP 暫存在瀏覽器記憶體中。請先下載，或按「釋放暫存」後再建立下一包。';
+    if (mode === 'manual') alert(message);
+    log(message, 'warn');
+    return null;
   }
 
-  const session = state.buildSession;
   if (session.done || session.cursor >= session.files.length) {
     session.done = true;
     updateZipButtonLabel();
     setProgress(100, '所有分割檔已建立完成');
     log('所有勾選檔案已處理完成。若分割檔已下載，請確認暫存均已釋放。');
-    return;
+    return null;
   }
 
   try {
@@ -538,7 +638,7 @@ async function downloadZip() {
       const file = session.files[session.cursor];
       const estimatedSize = Number(file.size || 0);
 
-      if (currentFiles.length >= MAX_FILES_PER_PART) break;
+      if (currentFiles.length >= maxFiles) break;
       if (currentFiles.length && estimatedSize && currentBytes + estimatedSize > SPLIT_ZIP_LIMIT_BYTES) break;
 
       const progressBase = Math.round((session.cursor / session.files.length) * 90);
@@ -549,12 +649,11 @@ async function downloadZip() {
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const incomingSize = bytes.byteLength;
 
-        if (currentFiles.length && currentBytes + incomingSize > SPLIT_ZIP_LIMIT_BYTES && !estimatedSize) {
-          log(`檔案實際大小會使本包超過 ${SPLIT_ZIP_LIMIT_LABEL}；此檔將延後到下一包重新下載：${file.zipPath}`, 'warn');
-          break;
-        }
-
-        if (currentFiles.length && currentBytes + incomingSize > SPLIT_ZIP_LIMIT_BYTES) {
+        if (currentFiles.length && incomingSize && currentBytes + incomingSize > SPLIT_ZIP_LIMIT_BYTES) {
+          if (!estimatedSize) {
+            log(`檔案實際大小會使本包超過 ${SPLIT_ZIP_LIMIT_LABEL}；此檔將延後到下一包重新下載：${file.zipPath}`, 'warn');
+            break;
+          }
           log(`檔案實際大小使本包略超過 ${SPLIT_ZIP_LIMIT_LABEL}：${file.zipPath}`, 'warn');
         }
 
@@ -563,14 +662,14 @@ async function downloadZip() {
         currentBytes += incomingSize;
         session.cursor += 1;
         session.completed += 1;
-        log(`已加入第 ${session.partIndex} 包：${file.zipPath}｜${formatBytes(incomingSize)}｜本包 ${currentFiles.length}/${MAX_FILES_PER_PART} 檔`);
+        log(`已加入第 ${session.partIndex} 包：${file.zipPath}｜${formatBytes(incomingSize)}｜本包 ${currentFiles.length}/${maxFiles} 檔`);
 
         if (incomingSize > SPLIT_ZIP_LIMIT_BYTES) {
           overLimit = true;
           break;
         }
 
-        if (currentFiles.length >= MAX_FILES_PER_PART || currentBytes >= SPLIT_ZIP_LIMIT_BYTES * 0.96) break;
+        if (currentFiles.length >= maxFiles || currentBytes >= SPLIT_ZIP_LIMIT_BYTES * 0.96) break;
       } catch (error) {
         state.skipped.push({ name: file.name, reason: `下載失敗：${error.message}` });
         session.cursor += 1;
@@ -579,7 +678,7 @@ async function downloadZip() {
       }
 
       renderStats();
-      if (currentFiles.length >= MAX_FILES_PER_PART || currentBytes >= SPLIT_ZIP_LIMIT_BYTES * 0.96) break;
+      if (currentFiles.length >= maxFiles || currentBytes >= SPLIT_ZIP_LIMIT_BYTES * 0.96) break;
     }
 
     if (!currentFiles.length) {
@@ -592,7 +691,7 @@ async function downloadZip() {
         log('本包沒有成功加入檔案，請再試一次或查看錯誤紀錄。', 'warn');
       }
       updateZipButtonLabel();
-      return;
+      return null;
     }
 
     setProgress(Math.round((session.cursor / session.files.length) * 95), `封裝第 ${session.partIndex} 包...`);
@@ -619,10 +718,12 @@ async function downloadZip() {
     renderPartLinks();
     updateZipButtonLabel();
     const pct = session.done ? 100 : Math.max(1, Math.round((session.cursor / session.files.length) * 100));
-    setProgress(pct, session.done ? '最後一包已建立，請下載後釋放暫存' : `第 ${part.index} 包已建立，請下載並釋放暫存後建立下一包`);
+    setProgress(pct, session.done ? '最後一包已建立，可下載或等待自動釋放' : `第 ${part.index} 包已建立，可下載後自動接續下一包`);
+    return part;
   } catch (error) {
     log(`分割 ZIP 建立失敗：${error.message}`, 'error');
-    alert(error.message);
+    if (mode === 'manual') alert(error.message);
+    return null;
   } finally {
     setBusy(false);
   }
@@ -636,8 +737,58 @@ function createBuildSession(files) {
     partIndex: 1,
     timestamp: formatTimestamp(new Date()),
     baseName: sanitizeName(state.settings.zipPrefix || 'DriveFetch'),
+    maxFilesPerPart: getMaxFilesPerPart(),
     done: false
   };
+}
+
+function getMaxFilesPerPart() {
+  const raw = Number(elements.filesPerPartLimit?.value || DEFAULT_MAX_FILES_PER_PART);
+  return clampNumber(raw, 1, HARD_MAX_FILES_PER_PART);
+}
+
+function getBlockingActiveBlobParts() {
+  return state.parts.filter((part) => part?.url && part.status !== 'released' && part.status !== 'downloaded');
+}
+
+function releaseDownloadedActivePartsSilently() {
+  const downloaded = state.parts.filter((part) => part?.url && part.status === 'downloaded');
+  downloaded.forEach((part) => {
+    URL.revokeObjectURL(part.url);
+    part.url = '';
+    part.status = 'released';
+    part.releasedAt = new Date().toISOString();
+    log(`已自動釋放已下載暫存：${part.fileName}`);
+  });
+  if (downloaded.length) {
+    renderPartLinks();
+    updateZipButtonLabel();
+  }
+}
+
+function triggerPartDownload(index, automatic = false) {
+  const part = state.parts.find((item) => item.index === index);
+  if (!part || !part.url || part.status === 'released') return false;
+  const link = document.createElement('a');
+  link.href = part.url;
+  link.download = part.fileName;
+  link.rel = 'noopener';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  markPartDownloaded(index, true);
+  log(`${automatic ? '自動' : '手動'}觸發下載：${part.fileName}`);
+  return true;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function clampNumber(value, min, max) {
+  const n = Number.isFinite(value) ? value : min;
+  return Math.min(max, Math.max(min, Math.round(n)));
 }
 
 function getSelectedFiles() {
@@ -651,7 +802,7 @@ function estimatePartCount(files) {
   let bytes = 0;
   for (const file of files) {
     const size = Number(file.size || 0);
-    const wouldExceedCount = count >= MAX_FILES_PER_PART;
+    const wouldExceedCount = count >= getMaxFilesPerPart();
     const wouldExceedBytes = count > 0 && size && bytes + size > SPLIT_ZIP_LIMIT_BYTES;
     if (wouldExceedCount || wouldExceedBytes) {
       parts += 1;
@@ -676,24 +827,45 @@ function getActiveBlobParts() {
 function updateZipButtonLabel() {
   if (!elements.zipBtn) return;
   const selectedCount = getSelectedFiles().length;
-  if (!state.files.length || (!state.buildSession && !selectedCount)) {
+  const session = state.buildSession;
+  const blocking = Boolean(getBlockingActiveBlobParts().length);
+
+  if (!state.files.length || (!session && !selectedCount)) {
     elements.zipBtn.textContent = '建立第 1 包';
     elements.zipBtn.disabled = true;
+    if (elements.autoBuildBtn) {
+      elements.autoBuildBtn.textContent = '連續建立/下載';
+      elements.autoBuildBtn.disabled = true;
+    }
     return;
   }
-  const session = state.buildSession;
+
   if (!session) {
     elements.zipBtn.textContent = '建立第 1 包';
-    elements.zipBtn.disabled = Boolean(state.busy || !selectedCount);
+    elements.zipBtn.disabled = Boolean(state.busy || state.autoQueue.running || !selectedCount);
+    if (elements.autoBuildBtn) {
+      elements.autoBuildBtn.textContent = state.autoQueue.running ? '停止連續' : '連續建立/下載';
+      elements.autoBuildBtn.disabled = Boolean((state.busy && !state.autoQueue.running) || !selectedCount);
+    }
     return;
   }
+
   if (session.done || session.cursor >= session.files.length) {
     elements.zipBtn.textContent = '全部完成';
     elements.zipBtn.disabled = true;
+    if (elements.autoBuildBtn) {
+      elements.autoBuildBtn.textContent = state.autoQueue.running ? '停止連續' : '全部完成';
+      elements.autoBuildBtn.disabled = !state.autoQueue.running;
+    }
     return;
   }
+
   elements.zipBtn.textContent = `建立第 ${session.partIndex} 包`;
-  elements.zipBtn.disabled = Boolean(state.busy || getActiveBlobParts().length);
+  elements.zipBtn.disabled = Boolean(state.busy || state.autoQueue.running || blocking);
+  if (elements.autoBuildBtn) {
+    elements.autoBuildBtn.textContent = state.autoQueue.running ? '停止連續' : '連續建立/下載';
+    elements.autoBuildBtn.disabled = Boolean((state.busy && !state.autoQueue.running) || blocking);
+  }
 }
 
 function handlePartAction(event) {
@@ -704,7 +876,8 @@ function handlePartAction(event) {
   if (!index) return;
 
   if (action === 'download-part') {
-    window.setTimeout(() => markPartDownloaded(index, true), 300);
+    event.preventDefault();
+    triggerPartDownload(index, false);
     return;
   }
   if (action === 'mark-downloaded') {
@@ -725,10 +898,10 @@ function markPartDownloaded(index, triggeredByDownload) {
   log(`${triggeredByDownload ? '已觸發下載' : '已標記下載完成'}：${part.fileName}`);
 }
 
-function releasePartUrl(index) {
+function releasePartUrl(index, options = {}) {
   const part = state.parts.find((item) => item.index === index);
   if (!part || part.status === 'released') return;
-  if (part.status !== 'downloaded') {
+  if (part.status !== 'downloaded' && !options.skipConfirm) {
     const ok = confirm(`「${part.fileName}」尚未標記為下載完成。
 
 釋放暫存後，這個下載連結會失效；若還需要下載，必須重新掃描並重新建立。是否仍要釋放？`);
@@ -740,7 +913,7 @@ function releasePartUrl(index) {
   part.releasedAt = new Date().toISOString();
   renderPartLinks();
   updateZipButtonLabel();
-  log(`已釋放暫存：${part.fileName}`);
+  log(`${options.auto ? '已自動釋放暫存' : '已釋放暫存'}：${part.fileName}`);
 }
 
 function releaseAllPartUrls() {
@@ -940,7 +1113,7 @@ function renderFileList() {
     updateSelectionSummary();
     return;
   }
-  elements.listHint.textContent = `共 ${state.files.length} 個檔案，已預設全選；可取消不需要下載的檔案。打包規則：每包最多 ${MAX_FILES_PER_PART} 檔，若超過 ${SPLIT_ZIP_LIMIT_LABEL} 則優先分包。`;
+  elements.listHint.textContent = `共 ${state.files.length} 個檔案，已預設全選；可取消不需要下載的檔案。打包規則：每包最多 ${getMaxFilesPerPart()} 檔，若超過 ${SPLIT_ZIP_LIMIT_LABEL} 則優先分包。`;
   const frag = document.createDocumentFragment();
   state.files.forEach((file, index) => {
     const row = document.createElement('label');
@@ -1003,7 +1176,9 @@ function invertSelections() {
 function setSelectionControlsDisabled(disabled) {
   [elements.selectAllBtn, elements.selectNoneBtn, elements.invertSelectionBtn].forEach((btn) => { if (btn) btn.disabled = disabled; });
   elements.fileList?.querySelectorAll('.file-check').forEach((input) => { input.disabled = disabled; });
+  if (elements.filesPerPartLimit) elements.filesPerPartLimit.disabled = disabled;
 }
+
 
 function updateSelectionSummary() {
   if (!elements.selectedSummary) return;
@@ -1033,12 +1208,12 @@ function renderPartLinks() {
   if (elements.clearTempBtn) elements.clearTempBtn.disabled = activeCount === 0;
 
   if (!state.parts.length) {
-    elements.splitHint.textContent = `建立後會在此產生目前分割 ZIP 的下載連結。規則：每包最多 ${MAX_FILES_PER_PART} 檔，且目標不超過 ${SPLIT_ZIP_LIMIT_LABEL}；下載後請釋放暫存。`;
+    elements.splitHint.textContent = `建立後會在此產生分割 ZIP 下載連結。規則：每包最多 ${getMaxFilesPerPart()} 檔，且目標不超過 ${SPLIT_ZIP_LIMIT_LABEL}；可手動逐包或連續建立/下載。`;
     return;
   }
 
   const session = state.buildSession;
-  const doneText = session?.done ? '全部分割檔已建立完成。' : '釋放暫存後可建立下一包。';
+  const doneText = session?.done ? '全部分割檔已建立完成。' : '手動模式會自動釋放已下載暫存；連續模式會自動接續。';
   elements.splitHint.textContent = `已建立 ${state.parts.length} 個分割檔，目前 ${activeCount} 個仍佔用瀏覽器暫存。${doneText}`;
 
   const frag = document.createDocumentFragment();
@@ -1077,7 +1252,7 @@ function renderPartLinks() {
 
 function getPartStatusLabel(part) {
   if (part.status === 'released') return '已釋放暫存';
-  if (part.status === 'downloaded') return '已標記下載';
+  if (part.status === 'downloaded') return '已下載，待自動釋放';
   return '待下載，暫存中';
 }
 
@@ -1108,13 +1283,14 @@ function setBusy(busy, label = '') {
   state.busy = busy;
   [elements.loginBtn, elements.scanBtn, elements.zipBtn, elements.directDownloadBtn, elements.saveSettingsBtn, elements.testAuthBtn].forEach((btn) => {
     if (!btn) return;
-    if (btn === elements.zipBtn) btn.disabled = busy || !state.files.length || Boolean(getActiveBlobParts().length) || Boolean(state.buildSession?.done);
+    if (btn === elements.zipBtn) btn.disabled = busy || state.autoQueue.running || !state.files.length || Boolean(getBlockingActiveBlobParts().length) || Boolean(state.buildSession?.done);
     else if (btn === elements.directDownloadBtn) btn.disabled = busy || !state.directTarget || !buildDirectDownloadUrl(state.directTarget);
     else btn.disabled = busy;
   });
   [elements.selectAllBtn, elements.selectNoneBtn, elements.invertSelectionBtn].forEach((btn) => { if (btn) btn.disabled = busy || Boolean(state.buildSession); });
   elements.fileList?.querySelectorAll('.file-check').forEach((input) => { input.disabled = busy || Boolean(state.buildSession); });
   if (elements.clearTempBtn) elements.clearTempBtn.disabled = busy || getActiveBlobParts().length === 0;
+  if (elements.autoBuildBtn) elements.autoBuildBtn.disabled = busy && !state.autoQueue.running;
   updateZipButtonLabel();
   if (label) setProgress(null, label);
 }
