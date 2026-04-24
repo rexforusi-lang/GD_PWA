@@ -1,5 +1,5 @@
 {
-  "version": "V1_2",
+  "version": "V1_4",
   "releasedAt": "2026-04-24",
-  "notes": "Add 1GB split ZIP package generation with per-part download links while keeping no-API single-file direct mode."
+  "notes": "Add selectable file list, 100-files-or-1GB split ZIP rule, and OAuth token refresh/retry for Drive API 401."
 }

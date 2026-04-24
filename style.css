@@ -180,6 +180,44 @@ button.small { min-height: 34px; font-size: 12px; border-radius: 12px; }
 .file-size { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .direct-item { border-color: rgba(96, 165, 250, 0.42); background: rgba(96, 165, 250, 0.10); }
 
+.selection-toolbar {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.18);
+}
+.light-mode .selection-toolbar { background: rgba(241, 245, 249, 0.68); }
+.selection-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+.selection-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.file-item.selectable-file {
+  grid-template-columns: 28px 36px 1fr auto;
+  cursor: pointer;
+}
+.file-check {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  accent-color: #22c55e;
+  justify-self: center;
+}
+.file-check:focus {
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
+}
+
+
 pre#logBox {
   min-height: 96px; max-height: 220px; margin: 0; padding: 12px;
   overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -313,4 +351,51 @@ code { font-size: 12px; color: var(--primary); }
   font-size: 12px;
   font-weight: 900;
   white-space: nowrap;
+}
+
+/* V1_4 low-memory split workflow */
+.split-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+.part-item.released {
+  opacity: 0.68;
+}
+.part-actions {
+  display: grid;
+  gap: 6px;
+  min-width: 88px;
+}
+.part-btn {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--card-strong);
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.part-btn.danger {
+  border-color: rgba(251, 113, 133, 0.36);
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--danger);
+}
+.disabled-link {
+  background: rgba(148, 163, 184, 0.22) !important;
+  color: var(--muted) !important;
+  pointer-events: none;
+}
+@media (max-width: 390px) {
+  .part-item {
+    grid-template-columns: 34px 1fr;
+  }
+  .part-actions {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
